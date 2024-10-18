@@ -302,13 +302,22 @@ if (managementData->memPageSM) {
 }
 
 // Pin the second page and load the page data
+// Pin the page in the buffer
 pinPage(&managementData->bm, &managementData->pageHndlBM, 1);
-// Allocate memory for the in-memory page and copy the contents from the buffer
+
+// Allocate memory for the in-memory page
 managementData->memPageSM = (SM_PageHandle)malloc(PAGE_SIZE);
+if (managementData->memPageSM == NULL) {
+    unpinPage(&managementData->bm, &managementData->pageHndlBM); // Ensure the page is unpinned if malloc fails
+    return RC_MEM_ALLOCATION_FAIL; // Handle memory allocation failure
+}
+
+// Copy the contents from the buffer to the allocated memory
 memcpy(managementData->memPageSM, managementData->pageHndlBM.data, PAGE_SIZE);
 
 // Release the pinned page from the buffer pool
 unpinPage(&managementData->bm, &managementData->pageHndlBM);
+
 
 // Extract the number of pages and directory pages from the in-memory page
 int *pageInfo = (int *)managementData->memPageSM;
@@ -361,6 +370,11 @@ extern RC closeTable(RM_TableData *rel) {
 
 free(rel->schema->dataTypes);
 free(rel->schema->typeLength);
+
+
+
+
+
 free(rel->schema->keyAttrs);
 free(rel->schema);
 
@@ -441,11 +455,12 @@ extern int getNumTuples(RM_TableData *rel) {
     int totalTuples = 0; // Variable to store the total number of tuples
 
     // Traverse each page in the directory and count the tuples
-    for (int pageIdx = 0; pageIdx < managementData->numPages; pageIdx++) {
-        PageDirectoryEntry *currentEntry = &managementData->pageDirectory[pageIdx];
-        totalTuples = totalTuples + currentEntry->recordCount; // Add record count from current page
-    }
-
+   int pageIdx = 0; // Initialize the page index
+while (pageIdx < managementData->numPages) {
+    PageDirectoryEntry *currentEntry = &managementData->pageDirectory[pageIdx];
+    totalTuples += currentEntry->recordCount; // Add record count from current page
+    pageIdx++; // Increment the page index
+}
     return totalTuples; // Return the final tuple count
 }
 
@@ -488,15 +503,18 @@ if (needsNewPageDirectory) {
 }
 
 // Initialize page number to an invalid state
-int pageNum = -1;
+int i = 0; // Initialize the index
+int pageNum = -1; // Initialize pageNum to -1
 
-// Search through the page directory to find a page with free slots
-for (int i = 0; i <= managementData->numPages - managementData->numPageDP; i++) {
+// Find a page with free space using a while loop
+while (i <= managementData->numPages - managementData->numPageDP) {
     if (managementData->pageDirectory[i].hasFreeSlot) {
         pageNum = i; // Found a page with free space
         break; // Exit the loop
     }
+    i++; // Increment the index to check the next page
 }
+
 
     // Check if a free page was found; if not, allocate a new page
 if (pageNum == -1) {
@@ -690,27 +708,41 @@ int availableSpace = managementData->pageDirectory[record->id.page].freeSpace +
                      (slotEntry->offset - (record->id.slot * sizeof(SlotDirectoryEntry)));
 
 // Check if the new record fits in the existing page space
-if (recSize > availableSpace) {
-    // Remove the current record and insert a new one if it doesn't fit
-    RC resultCode = deleteRecord(rel, record->id);
-    if (resultCode != RC_OK) {
-        unpinPage(&managementData->bm, &managementData->pageHndlBM);
-        return resultCode; // Error handling for deleteRecord failure
-    }
+// Determine the action based on record size compared to available space
+int action = (recSize > availableSpace) ? 1 : 0; // 1 for delete and insert, 0 for update
 
-    resultCode = insertRecord(rel, record);
-    if (resultCode != RC_OK) {
-        unpinPage(&managementData->bm, &managementData->pageHndlBM);
-        return resultCode; // Error handling for insertRecord failure
-    }
-} else {
-    // Update the existing record within the page
-    memcpy(pageData + slotEntry->offset, record->data, recSize);
+switch (action) {
+    case 1: { // Delete and insert
+        // Remove the current record and insert a new one if it doesn't fit
+        RC resultCode = deleteRecord(rel, record->id);
+        if (resultCode != RC_OK) {
+            unpinPage(&managementData->bm, &managementData->pageHndlBM);
+            return resultCode; // Error handling for deleteRecord failure
+        }
 
-    // Adjust the free space in the page directory
-    managementData->pageDirectory[record->id.page].freeSpace -= 
-        (recSize - (slotEntry->offset - (record->id.slot * sizeof(SlotDirectoryEntry))));
+        resultCode = insertRecord(rel, record);
+        if (resultCode != RC_OK) {
+            unpinPage(&managementData->bm, &managementData->pageHndlBM);
+            return resultCode; // Error handling for insertRecord failure
+        }
+        break; // Break out of switch after handling the case
+    }
+    case 0: { // Update existing record
+        // Update the existing record within the page
+        void *destination = pageData + slotEntry->offset;  // Calculate destination pointer
+        memcpy(destination, record->data, recSize);         // Copy the new record data
+
+        // Adjust the free space in the page directory
+        int pageIndex = record->id.page;                    // Get the page index
+        int slotOffset = slotEntry->offset;                  // Get the slot offset
+        int slotSize = record->id.slot * sizeof(SlotDirectoryEntry); // Calculate the size of the slot
+        managementData->pageDirectory[pageIndex].freeSpace -= (recSize - (slotOffset - slotSize));
+        break; // Break out of switch after handling the case
+    }
+    default:
+        return RC_UNEXPECTED_ACTION; // Handle unexpected action state if necessary
 }
+
 
 // Mark the page as modified (dirty)
 markDirty(&managementData->bm, &managementData->pageHndlBM);
@@ -726,20 +758,6 @@ markDirty(&managementData->bm, &managementData->pageHndlBM);
 }
 
 
-/*
- * Retrieves a record from the table based on the provided RID.
- * This function retrieves the data of a record in the table based on the provided RID.
- *
- * Parameters:
- * - rel: Pointer to the RM_TableData structure representing the table.
- * - id: RID (Record Identifier) of the record to be retrieved.
- * - record: Pointer to the Record structure where the retrieved data will be stored.
- *
- * Returns:
- * - RC_OK: The record was retrieved successfully.
- * - RC_RM_INVALID_RID: The provided RID is invalid.
- * - RC_RM_RECORD_NOT_FOUND: The record with the provided RID was not found.
- */
 extern RC getRecord(RM_TableData *table, RID recordID, Record *resultRecord) {
     RM_managementData *mgmtData = (RM_managementData *)table->managementData;
 
@@ -799,20 +817,17 @@ extern RC startScan(RM_TableData *rel, RM_ScanHandle *scan, Expr *cond) {
         return RC_RM_NULL_POINTER; // Error handling for null input parameters
     }
 
-    // Allocate memory for the scan info
-    ScanInfo *scanInfo = (ScanInfo *)malloc(sizeof(ScanInfo));
-    if (scanInfo == NULL) {
-        return RC_MEM_ALLOCATION_FAIL; // Error handling for malloc failure
-    }
+   // Allocate and initialize memory for the scan info
+ScanInfo *scanInfo = (ScanInfo *)malloc(sizeof(ScanInfo));
+if (!scanInfo) {
+    return RC_MEM_ALLOCATION_FAIL; // Error handling for malloc failure
+}
 
-    // Initialize the scan info
-    scanInfo->condition = cond;
-    scanInfo->currentPage = 0;
-    scanInfo->currentSlot = 0;
+// Initialize the scan info and management data
+*scanInfo = (ScanInfo){ .condition = cond, .currentPage = 0, .currentSlot = 0 }; // Use compound literal for initialization
+scan->rel = rel; 
+scan->mgmtData = scanInfo;
 
-    // Initialize the scan management data
-    scan->rel = rel;
-    scan->mgmtData = scanInfo;
 
     RM_managementData *managementData = (RM_managementData *)rel->managementData;
 
@@ -844,10 +859,8 @@ RM_TableData *rel = scan->rel;
 RM_managementData *managementData = (RM_managementData *)rel->managementData;
 
 // Calculate maximum entries and record size in a more streamlined manner
-int maxEntriesInPD = (PAGE_SIZE - (2 * sizeof(int))) / sizeof(PageDirectoryEntry);
-int recordSize = getRecordSize(rel->schema);
+int maxEntriesInPD = (PAGE_SIZE - (2 * sizeof(int))) / sizeof(PageDirectoryEntry), recordSize = getRecordSize(rel->schema);
 
-    
     // Loop to find the next available record
     for (; scanInfo->currentPage <= managementData->numPages - managementData->numPageDP; scanInfo->currentPage++) {
 
@@ -1235,7 +1248,6 @@ extern RC freeRecord (Record *record) {
 
 // Sets the attribute values of a record for a given schema
 extern RC setAttr(Record *record, Schema *schema, int attrNum, Value *value) {
-    // Set the attribute values of a record for a given schema
 
     // Validate attribute number and data type
 if (attrNum < 0 || attrNum >= schema->numAttr || value->dt != schema->dataTypes[attrNum]) {
