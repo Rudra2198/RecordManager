@@ -54,62 +54,235 @@ Each group member has made an equal contribution to the completion of the assign
   * #### dt.h: Defines data types.
 
 ## RECORD MANAGER FUNCTIONS
-## Core Table Management Functions
 
-#### initRecordManager(void *mgmtData)
-Initializes the Record Manager by setting up any necessary data structures, such as internal buffers and metadata required for managing records and tables. It prepares the system to handle subsequent record operations, ensuring that all components are ready for use. If specific management data is provided, this function will also configure the Record Manager accordingly. Proper initialization is crucial to prevent runtime errors during table operations.
+## initRecordManager
+Initializes the Record Manager.
 
-#### shutdownRecordManager()
-Cleans up and frees any resources used by the Record Manager, ensuring that all allocated memory is properly released and that no memory leaks occur. This function is typically called when the application is closing or when the Record Manager is no longer needed. It also closes any open tables and finalizes any pending operations, ensuring a clean exit from the record management system. Proper shutdown helps maintain system stability and reliability.
+1. Initialize the storage manager.
+2. Return RC_OK to indicate successful initialization.
 
-#### createTable(char *name, Schema *schema)
-Creates a new table in the system with the specified name and schema. This function allocates necessary resources and structures to hold the table's data, including its records and attributes as defined in the schema. It checks for the existence of a table with the same name and returns an error if it already exists. Once created, the table can be opened for operations, allowing users to insert, retrieve, or manipulate records.
+## shutdownRecordManager
+Shuts down the Record Manager.
 
-#### openTable(RM_TableData *rel, char *name)
-Opens an existing table for operations such as inserting or retrieving records. This function locates the specified table by its name, loading its data into memory and preparing it for manipulation. If the table does not exist or is already open, appropriate error handling will occur. Upon successful opening, the function returns a handle to the table, allowing further operations to be performed on its records.
+1. Print a shutdown message.
+2. Return RC_OK to indicate successful shutdown.
 
-#### closeTable(RM_TableData *rel)
-Closes the table after all operations have been completed, ensuring that any changes made to the records are saved and that the table's resources are released. This function also flushes any buffered changes to disk, preserving data integrity. It prevents further operations on the table until it is reopened. Proper closing of tables is essential to avoid data loss and ensure that resources are efficiently managed.
+## createTable
+Creates a new table with the specified name and schema.
 
-#### deleteTable(char *name)
-Deletes a table and its associated data from the system, including all records stored within it. This function checks for the existence of the specified table, releasing all resources and memory allocated for it. If the table is currently open, it will first close it to ensure data integrity. After deletion, the table can no longer be accessed, and any operations performed on it will result in an error.
+1. Validate input parameters (name and schema).
+2. Create a new page file with the given name.
+3. Open the newly created page file.
+4. Allocate memory for the Table Information page.
+5. Write schema information to the page:
+   - Number of attributes
+   - Attribute names
+   - Data types
+   - Type lengths
+   - Key size and attributes
+6. Write the Table Information page to the file.
+7. Initialize and write the page directory:
+   - Number of pages
+   - Number of directory pages
+   - First page entry
+8. Close the file handle.
+9. Return RC_OK on successful creation.
 
-#### getNumTuples(RM_TableData *rel)
-Returns the number of tuples (records) in the specified table, providing essential information for users to understand the current state of the table. This function counts the total records stored and returns this value, which can be useful for reporting and analysis purposes. Accurate record counting helps in managing the database effectively and planning for operations like insertion or deletion.
+## openTable
+Opens an existing table.
 
-#### Record Handling Functions
-insertRecord(RM_TableData *rel, Record *record)
-Inserts a new record into the specified table, adding it to the end of the existing records. This function first checks if the record conforms to the table's schema, ensuring that all required attributes are present and valid. If the insertion is successful, it updates the count of tuples in the table. Handling errors gracefully is crucial, as invalid records or issues with storage could lead to data corruption.
+1. Allocate memory for RM_TableData structure.
+2. Open the page file associated with the table.
+3. Initialize the buffer pool with LRU replacement strategy.
+4. Load the Table Information page:
+   - Pin the first page
+   - Copy data to in-memory page
+   - Unpin the page
+5. Extract schema information from the in-memory page:
+   - Number of attributes
+   - Attribute names
+   - Data types
+   - Type lengths
+   - Key size and attributes
+6. Load the page directory:
+   - Pin the second page
+   - Extract number of pages and directory pages
+   - Allocate memory for page directory
+   - Copy page directory data
+7. Free temporary memory.
+8. Return RC_OK on successful opening.
 
-#### deleteRecord(RM_TableData *rel, RID id)
-Deletes a record identified by its Record ID (RID) from the specified table. This function locates the record within the table's storage and removes it, freeing any associated memory and updating the tuple count. If the RID does not correspond to an existing record, an error is returned. Ensuring that deletions are handled correctly is essential for maintaining data integrity within the system.
+## closeTable
+Closes the specified table.
 
-#### updateRecord(RM_TableData *rel, Record *record)
-Updates an existing record in the table with new data provided in the input record. This function first locates the record using its ID, then verifies that the new data conforms to the table's schema. If successful, the existing record is replaced with the new data, and any necessary index updates are performed. Proper handling of update operations ensures that the data remains accurate and consistent throughout the table.
+1. Check if the table and its components are valid.
+2. Free the schema information:
+   - Attribute names
+   - Data types
+   - Type lengths
+   - Key attributes
+3. Free the page directory.
+4. Shutdown the buffer pool.
+5. Close the table file.
+6. Free the management data.
+7. Return RC_OK on successful closure.
 
-#### getRecord(RM_TableData *rel, RID id, Record *record)
-Retrieves a record with a specific ID from the specified table and populates the provided record structure with its data. This function verifies the existence of the record before attempting to fetch it, ensuring that no invalid accesses occur. If the retrieval is successful, the data from the storage is copied into the record structure, allowing users to manipulate or display it as needed. Error handling is included to manage cases where the record does not exist.
+## deleteTable
+Deletes the specified table.
 
-## Scan Functions
-#### startScan(RM_TableData *rel, RM_ScanHandle *scan, Expr *cond)
-Starts a new scan on the specified table based on the provided condition expression. This function initializes the scan handle and prepares the internal state for scanning through records that match the specified condition. It effectively sets the starting point for fetching records and optimizes the retrieval process based on the condition given. Proper initialization of the scan is essential for ensuring accurate results during the scan operation.
+1. Validate the table name.
+2. Destroy the page file associated with the table.
+3. Return RC_OK on successful deletion.
 
-#### next(RM_ScanHandle *scan, Record *record)
-Fetches the next record in the scan that satisfies the specified condition. This function checks the current state of the scan handle and retrieves the next matching record, populating the provided record structure with its data. If no more records match the condition, it returns an indication that the scan has completed. Efficient retrieval and error handling are crucial for providing accurate results and maintaining the integrity of the scanning process.
+## getNumTuples
+Gets the total number of tuples stored in the table.
 
-#### closeScan(RM_ScanHandle *scan)
-Closes the current scan, releasing any resources associated with it and preventing further record fetching. This function also ensures that any temporary data created during the scan is properly cleared. Closing scans when they are no longer needed is important for resource management and preventing memory leaks within the Record Manager. Proper handling of scan closures ensures system stability.
+1. Validate the relation and management data.
+2. Initialize a counter for total tuples.
+3. Traverse each page in the directory:
+   - Sum up the record count from each page
+4. Return the total number of tuples.
 
-## Schema Functions
-#### getRecordSize(Schema *schema)
-Returns the size of a record based on the given schema, providing vital information for memory allocation and record management. This function calculates the total byte size required to store a record defined by the schema, considering all attributes and their data types. Accurate size calculations are essential for efficient storage management and for ensuring that records can be properly allocated in memory.
+## insertRecord
+Inserts a new record into the table.
 
-#### createSchema(int numAttr, char **attrNames, DataType *dataTypes, int typeLength, int keySize, int keys)
-Creates a new schema that defines the structure of records in a table, specifying the number of attributes and their respective names and data types. This function allocates memory for the schema and initializes it with the provided parameters, allowing for customizable record structures. A well-defined schema is crucial for maintaining data integrity and consistency throughout the table's records.
+1. Check if a new page directory is required.
+2. Find a page with free space or allocate a new page if needed.
+3. Pin the target page.
+4. Find a free slot within the page.
+5. Write the record data to the page.
+6. Update the record ID.
+7. Update page directory entry (free space, slot availability).
+8. Mark the page as dirty and unpin it.
+9. Write the modified page back to the file.
+10. Update and write the page directory.
+11. Return RC_OK on successful insertion.
 
-#### freeSchema(Schema *schema)
-Frees the memory allocated for a schema, ensuring that no memory leaks occur when the schema is no longer needed. This function deallocates all resources associated with the schema, including attribute names and data type information. Proper management of memory related to schemas is essential for maintaining overall system performance and reliability.
+## deleteRecord
+Deletes a record from the table.
 
-## Record and Attribute Management Functions
-#### createRecord(Record **record, Schema *schema)
-Creates a new record according to the provided schema, allocating necessary memory for its attributes and initializing them to default values. This function ensures that the record structure aligns with the schema definition, allowing for consistent data storage. Proper creation of records is essential for maintaining data integrity.
+1. Validate the provided RID.
+2. Pin the page containing the record.
+3. Check if the slot is already free.
+4. Mark the slot as free.
+5. Update the page directory entry.
+6. Mark the page as dirty and unpin it.
+7. Return RC_OK on successful deletion.
+
+## updateRecord
+Updates a record in the table.
+
+1. Validate the provided RID.
+2. Pin the page containing the record.
+3. Check if the record exists.
+4. Determine if the updated record fits in the original slot.
+5. If it fits, update the record in place.
+6. If it doesn't fit, delete the old record and insert the new one.
+7. Update page directory entry if necessary.
+8. Mark the page as dirty and unpin it.
+9. Return RC_OK on successful update .
+
+## getRecord
+Gets a record from the table based on its RID.
+
+1. Validate the provided RID.
+2. Pin the page containing the record.
+3. Check if the slot is occupied.
+4. Copy the record data to the result record.
+5. Unpin the page.
+6. Return RC_OK on successful retrieval.
+
+## startScan
+Initializes a scan operation on the table.
+
+1. Validate input parameters.
+2. Allocate memory for the scan info.
+3. Initialize the scan info and management data.
+4. Pin the first page of the table.
+5. Return RC_OK on successful initialization.
+
+## next
+Gets the next record from the scan.
+
+1. Extract relevant data from scan and rel objects.
+2. Loop to find the next available record:
+   - Pin the next page.
+   - Iterate through slots on the current page.
+   - Check if the slot is occupied.
+   - Copy the record data to the result record.
+   - Evaluate the scan condition.
+   - If the condition is met, return RC_OK.
+3. If no valid record is found, return RC_RM_NO_MORE_TUPLES.
+
+## closeScan
+Closes the scan operation.
+
+1. Validate the scan handle.
+2. Safely unpin the current page if it was pinned.
+3. Free the memory for ScanInfo.
+4. Return RC_OK on successful closure.
+
+## getRecordSize
+Gets the size of a record based on the schema.
+
+1. Initialize the record size to 0.
+2. Iterate through attributes in the schema:
+   - Add the size of each attribute to the record size.
+3. Return the total record size.
+
+## createSchema
+Creates a new schema.
+
+1. Allocate memory for the schema structure.
+2. Set the number of attributes.
+3. Allocate memory for attribute names, data types, and type lengths.
+4. Copy attribute names, data types, and type lengths into the schema.
+5. Allocate memory for key attributes.
+6. Copy key attributes into the schema.
+7. Return the created schema.
+
+## freeSchema
+Frees the memory allocated for a schema.
+
+1. Check if the schema pointer is NULL.
+2. Free the memory for attribute names.
+3. Free the memory for data types.
+4. Free the memory for type lengths.
+5. Free the memory for key attributes.
+6. Free the memory for the schema structure.
+7. Return RC_OK on successful freeing.
+
+## createRecord
+Creates a new record based on the provided schema.
+
+1. Validate input parameters.
+2. Allocate memory for the Record structure.
+3. Initialize the Record ID to an invalid state.
+4. Allocate memory for the record's data buffer.
+5. Initialize the record's data buffer to zero.
+6. Return RC_OK on successful creation.
+
+## freeRecord
+Frees the memory allocated for a record.
+
+1. Check if the record pointer is NULL.
+2. Free the memory for the record's data buffer.
+3. Free the memory for the Record structure.
+4. Return RC_OK on successful freeing.
+
+## setAttr
+Sets the attribute value of a record.
+
+1. Validate attribute number and data type.
+2. Calculate the offset of the attribute within the record's data buffer.
+3. Copy the attribute value from the Value structure to the record's data buffer.
+4. Return RC_OK on successful setting.
+
+## getAttr
+Gets the attribute value of a record.
+
+1. Calculate the offset of the attribute within the record's data buffer.
+2. Allocate memory for the Value structure.
+3. Set the data type of the attribute value.
+4. Copy the attribute value from the record's data buffer to the Value structure.
+5. Return RC_OK on successful retrieval.
