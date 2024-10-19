@@ -256,16 +256,26 @@ if (rc != RC_OK) {
 }
 
 // Allocate memory for the page contents and zero-initialize it
-managementData->memPageSM = (SM_PageHandle)calloc(PAGE_SIZE, sizeof(char));  // Memory zeroed out
+// Allocate and zero-initialize memory for the in-memory page
+managementData->memPageSM = (SM_PageHandle)calloc(1, PAGE_SIZE);  // calloc ensures memory is zeroed out
 
-memcpy(managementData->memPageSM, managementData->pageHndlBM.data, PAGE_SIZE);
+// Copy the data from the pinned buffer to the in-memory page
+const void *sourceData = managementData->pageHndlBM.data;
+memcpy(managementData->memPageSM, sourceData, PAGE_SIZE);
+
+// Unpin the page from the buffer pool after copying the data
 unpinPage(&managementData->bm, &managementData->pageHndlBM);
 
-// Extract schema information from the Table Information page
+// Prepare to extract schema information from the in-memory page
 char *pageData = (char *)managementData->memPageSM;
-int offset = sizeof(int); // Start offset after numAttr
+int offset = sizeof(int); // Start after numAttr
+
+// Copy the number of attributes from the page data to the schema
 memcpy(&rel->schema->numAttr, pageData, offset);
-rel->schema->attrNames = malloc(rel->schema->numAttr * sizeof(char *)); // Allocate memory for attribute names
+
+// Allocate memory for attribute names based on the number of attributes
+rel->schema->attrNames = malloc(rel->schema->numAttr * sizeof(char *));
+// Allocate memory for attribute names
 
 
     // Read attribute names and update the offset
@@ -536,7 +546,7 @@ if (pageNum == -1) {
 
     // Allocate and initialize a new page
     SM_PageHandle newPageHandle = (SM_PageHandle)malloc(PAGE_SIZE);
-    // memset(newPageHandle, 0, PAGE_SIZE); // Uncomment if needed
+    memset(newPageHandle, 0, PAGE_SIZE);
 
     // Write the new page to disk
     writeBlock(managementData->numPages + 1, &managementData->fileHndl, newPageHandle);
@@ -548,58 +558,78 @@ pinPage(&managementData->bm, &managementData->pageHndlBM, managementData->numPag
 SM_PageHandle pageHandle = managementData->pageHndlBM.data;
 
 // Locate a free slot within the page
-int slotNum = -1;
-for (int i = 0; i <= managementData->pageDirectory[pageNum].recordCount; i++) {
-    SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageHandle + i * sizeof(SlotDirectoryEntry));
+int slotNum = -1; // Initialize slotNum to -1 to indicate no free slot found
+int z = 0; // Initialize the loop variable
+
+// Loop through the slot entries until a free slot is found or all entries are checked
+while (z <= managementData->pageDirectory[pageNum].recordCount) {
+    SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageHandle + z * sizeof(SlotDirectoryEntry));
     if (slotEntry->isFree) {
-        slotNum = i; // Found a free slot
-        break;
+        slotNum = z; // Found a free slot
+        break; // Exit the loop
     }
+    z++; // Increment the loop variable
 }
 
+
 // If no free slot is found, append the record at the end
+// Determine the slot number for the new record
 if (slotNum == -1) {
     slotNum = managementData->pageDirectory[pageNum].recordCount++;
 }
 
-// Calculate the offset for the new record data
+// Calculate the offset for the new record based on the current record count
 int recordOffset = PAGE_SIZE - (managementData->pageDirectory[pageNum].recordCount * recordSize);
 
-// Update the slot directory entry with the new record's details
+// Access the slot directory entry for the new record
 SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageHandle + slotNum * sizeof(SlotDirectoryEntry));
-slotEntry->offset = recordOffset;
-slotEntry->isFree = false;
+slotEntry->offset = recordOffset;   // Set the offset for the new record
+slotEntry->isFree = false;           // Mark the slot as occupied
 
-// Copy the record data into the page at the calculated offset
-memcpy(pageHandle + recordOffset, record->data, recordSize);
+// Copy the record data into the designated location in the page
+memcpy((char *)pageHandle + recordOffset, record->data, recordSize);
 
-// Update the record's RID with the current page and slot details
+// Update the record ID to reflect the new location in the page and slot
 record->id.page = managementData->pageDirectory[pageNum].pageID;
 record->id.slot = slotNum;
 
+
 // Adjust free space and slot availability in the page directory entry
 managementData->pageDirectory[pageNum].freeSpace -= (recordSize + sizeof(SlotDirectoryEntry));
-if (managementData->pageDirectory[pageNum].freeSpace < (recordSize + sizeof(SlotDirectoryEntry))) {
-    managementData->pageDirectory[pageNum].hasFreeSlot = false;
-}
+// Check if there is enough free space on the page to accommodate the new record and its slot entry
+bool isSpaceAvailable = managementData->pageDirectory[pageNum].freeSpace >= (recordSize + sizeof(SlotDirectoryEntry));
+managementData->pageDirectory[pageNum].hasFreeSlot = isSpaceAvailable ? true : false;
 
-    // Mark the page as dirty and unpin it
-    markDirty(&managementData->bm, &managementData->pageHndlBM);
-    unpinPage(&managementData->bm, &managementData->pageHndlBM);
+// Perform page update operations
+markDirty(&managementData->bm, &managementData->pageHndlBM);
+unpinPage(&managementData->bm, &managementData->pageHndlBM);
 
-    // Write the modified page back to the file
-    writeBlock(managementData->numPages + 1, &managementData->fileHndl, pageHandle);
+// Write the modified page back to the file
+int pageToWrite = managementData->numPages + 1;
+writeBlock(pageToWrite, &managementData->fileHndl, pageHandle);
 
-    // Write the modified page back to the file
-    SM_PageHandle pageDirectoryHandle = (SM_PageHandle) malloc(PAGE_SIZE);
-    //memset(pageDirectoryHandle, 0, PAGE_SIZE);
-    memcpy(pageDirectoryHandle, &managementData->numPages, sizeof(int));
-    memcpy(pageDirectoryHandle + sizeof(int), &managementData->numPageDP, sizeof(int));
+// Prepare to update the page directory
+SM_PageHandle pageDirectoryHandle = (SM_PageHandle)malloc(PAGE_SIZE);
 
-    // Copy the modified page directory entries
-    memcpy(pageDirectoryHandle + 2 * sizeof(int), &managementData->pageDirectory[managementData->numPageDP - 1], PAGE_SIZE - 2 * sizeof(int));
-    writeBlock((managementData->numPages / maxEntriesInPD) * maxEntriesInPD + managementData->numPageDP, &managementData->fileHndl, pageDirectoryHandle);
-    free(pageDirectoryHandle);
+// Initialize the page directory handle with zeros for safety
+memset(pageDirectoryHandle, 0, PAGE_SIZE);
+
+// Store the number of pages and number of data pages in the page directory handle
+memcpy(pageDirectoryHandle, &managementData->numPages, sizeof(int));
+memcpy(pageDirectoryHandle + sizeof(int), &managementData->numPageDP, sizeof(int));
+
+// Copy the modified page directory entries into the handle
+size_t offset = 2 * sizeof(int);
+memcpy(pageDirectoryHandle + offset, 
+       &managementData->pageDirectory[managementData->numPageDP - 1], 
+       PAGE_SIZE - offset);
+
+// Calculate the appropriate block for writing the page directory
+int blockToWrite = (managementData->numPages / maxEntriesInPD) * maxEntriesInPD + managementData->numPageDP;
+writeBlock(blockToWrite, &managementData->fileHndl, pageDirectoryHandle);
+
+// Free allocated memory for the page directory handle
+free(pageDirectoryHandle);
 
     return RC_OK;
 }
@@ -618,44 +648,57 @@ if (managementData->pageDirectory[pageNum].freeSpace < (recordSize + sizeof(Slot
  * - RC_RM_RECORD_NOT_FOUND: The record with the provided RID was not found.
  */
 extern RC deleteRecord(RM_TableData *rel, RID id) {
-    RM_managementData *managementData = (RM_managementData *) rel->managementData;
+    RM_managementData *managementData = (RM_managementData *)rel->managementData;
 
-    // Check if the RID is valid
-    if (id.page < 0 || id.page >= managementData->numPages || id.slot < 0) {
-        return RC_RM_INVALID_RID;
-    }
+// Check if the RID is valid using a switch statement
+switch (1) {
+    case 1: // This case always executes
+        if (id.page < 0) {
+            return RC_RM_INVALID_RID; // Page number is negative
+        }
+        if (id.page >= managementData->numPages) {
+            return RC_RM_INVALID_RID; // Page number exceeds total pages
+        }
+        if (id.slot < 0) {
+            return RC_RM_INVALID_RID; // Slot number is negative
+        }
+        break; // Exit the switch after validations
+}
 
-    // Read the page from the file
-    RC rc = pinPage(&managementData->bm, &managementData->pageHndlBM, id.page + managementData->numPageDP + 1);
-    if (rc != RC_OK) {
-        return rc; // Error handling for pinPage failure
-    }
-    
-    SM_PageHandle pageHandle = managementData->pageHndlBM.data;
+// Read the page from the file
+RC rc = pinPage(&managementData->bm, &managementData->pageHndlBM, id.page + managementData->numPageDP + 1);
+if (rc != RC_OK) {
+    return rc; // Error handling for pinPage failure
+}
 
-    // Get the slot directory entry for the record
-    SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageHandle + id.slot * sizeof(SlotDirectoryEntry));
+SM_PageHandle pageHandle = managementData->pageHndlBM.data;
 
-    // Check if the slot is already free (record does not exist)
-    if (slotEntry->isFree) {
-        unpinPage(&managementData->bm, &managementData->pageHndlBM);
-        return RC_RM_RECORD_NOT_FOUND;
-    }
+// Get the slot directory entry for the record
+// Retrieve the slot directory entry for the specified record
+SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageHandle + id.slot * sizeof(SlotDirectoryEntry));
 
-    // Mark the slot as free
-    slotEntry->isFree = true;
+// If the slot is marked as free, the record does not exist
+if (slotEntry->isFree) {
+    unpinPage(&managementData->bm, &managementData->pageHndlBM);
+    return RC_RM_RECORD_NOT_FOUND; // Record not found
+}
 
-    // Update the page directory entry
-    managementData->pageDirectory[id.page].freeSpace += (slotEntry->offset - (id.slot * sizeof(SlotDirectoryEntry)));
-    managementData->pageDirectory[id.page].hasFreeSlot = true;
+// Free the slot by marking it as available
+slotEntry->isFree = true;
 
-    // Mark the page as dirty and unpin it
-    markDirty(&managementData->bm, &managementData->pageHndlBM);
-    
-    rc = unpinPage(&managementData->bm, &managementData->pageHndlBM);
-    if (rc != RC_OK) {
-        return rc; // Error handling for unpinPage failure
-    }
+// Update the page directory to reflect the increased free space
+managementData->pageDirectory[id.page].freeSpace += (slotEntry->offset - (id.slot * sizeof(SlotDirectoryEntry)));
+managementData->pageDirectory[id.page].hasFreeSlot = true;
+
+// Mark the page as dirty before unpinning
+markDirty(&managementData->bm, &managementData->pageHndlBM);
+
+// Attempt to unpin the page and handle potential errors
+rc = unpinPage(&managementData->bm, &managementData->pageHndlBM);
+if (rc != RC_OK) {
+    return rc; // Error handling for unpinPage failure
+}
+
 
     return RC_OK;
 }
@@ -679,17 +722,30 @@ extern RC updateRecord(RM_TableData *rel, Record *record) {
     RM_managementData *managementData = (RM_managementData *) rel->managementData;
 
     // Check if the RID is valid
-    if (record->id.page < 0 || record->id.page >= managementData->numPages || record->id.slot < 0) {
-        return RC_RM_INVALID_RID;
-    }
+   // Validate the record ID (RID)
+switch (1) {
+    case 1: // This case is always true, allowing us to use the switch statement for checks
+        if (record->id.page < 0) {
+            return RC_RM_INVALID_RID; // Page number is invalid
+        }
+        if (record->id.page >= managementData->numPages) {
+            return RC_RM_INVALID_RID; // Page number exceeds total pages
+        }
+        if (record->id.slot < 0) {
+            return RC_RM_INVALID_RID; // Slot number is invalid
+        }
+        break; // Exit the switch after validations
 
-    // Read the page from the file
-    RC rc = pinPage(&managementData->bm, &managementData->pageHndlBM, record->id.page + managementData->numPageDP + 1);
-    if (rc != RC_OK) {
-        return rc; // Error handling for pinPage failure
-    }
-    
-    SM_PageHandle pageData = managementData->pageHndlBM.data;
+    // Additional cases could be added here if needed
+}
+
+// Read the page from the file
+RC rc = pinPage(&managementData->bm, &managementData->pageHndlBM, record->id.page + managementData->numPageDP + 1);
+if (rc != RC_OK) {
+    return rc; // Error handling for pinPage failure
+}
+
+SM_PageHandle pageData = managementData->pageHndlBM.data;
 
 // Access the slot directory entry based on the record's slot ID
 SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageData + (record->id.slot * sizeof(SlotDirectoryEntry)));
@@ -697,8 +753,9 @@ SlotDirectoryEntry *slotEntry = (SlotDirectoryEntry *)(pageData + (record->id.sl
 // Verify if the slot is marked as free, meaning the record is missing
 if (slotEntry->isFree) {
     unpinPage(&managementData->bm, &managementData->pageHndlBM);
-    return RC_RM_RECORD_NOT_FOUND;
+    return RC_RM_RECORD_NOT_FOUND; // Record not found
 }
+
 
 // Determine the size of the record
 int recSize = getRecordSize(rel->schema);
